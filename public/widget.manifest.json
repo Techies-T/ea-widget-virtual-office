@@ -1,0 +1,83 @@
+{
+  "protocolVersion": "1.0",
+  "id": "virtual-office",
+  "packageId": "com.techies.widget.virtual-office",
+  "name": "Virtual Office",
+  "icon": "🏢",
+  "version": "3.0.0",
+  "category": "collaboration",
+  "author": "Techies Official",
+  "description": "2Dフロア在席可視化、ダイレクトメッセージ（Gemma 4 リアルタイム通訳）、および就業規則準拠のAI秘書による自動予定調整を提供する独立アドオンウィジェット。",
+  "entrypoints": {
+    "main": "/index.html?view=office",
+    "subViews": {
+      "dm-chat": {
+        "path": "/index.html?view=dm-chat",
+        "title": "Direct Message",
+        "defaultWidth": 420,
+        "defaultHeight": 540
+      }
+    },
+    "backgroundUnreadApi": "/api/vo/dm/unread"
+  },
+  "windowConfig": {
+    "defaultWidth": 900,
+    "defaultHeight": 620
+  },
+  "providesCapabilities": [
+    {
+      "id": "cap:vo:presence_read",
+      "name": "フロア在席確認",
+      "description": "オフィスマップ上の各メンバーの在席ルーム・リモート状況・オフライン状態を閲覧します。"
+    },
+    {
+      "id": "cap:vo:presence_write",
+      "name": "入退室・ダイレクトチャット・AIアバター生成",
+      "description": "自身のルーム移動、他メンバーとのDM・ビデオ会議・カレンダー仮登録、AIアバター生成を実行します。"
+    },
+    {
+      "id": "cap:vo:manage_assistant_rules",
+      "name": "AI秘書ルール・就業条件管理",
+      "description": "代理応答AIプロンプトおよび就業時間・休憩時間・バッファ設定を編集します（36協定コンプライアンス監査連携）。"
+    }
+  ],
+  "permissionsSchema": {
+    "readActions": [],
+    "executeActions": [],
+    "manageActions": [
+      "action:manage_assistant_rules"
+    ]
+  },
+  "integrity": {
+    "bundleFilesSha256": {
+      "assets/index-CD3HALFy.css": "cea8fb491fb90eecbe68554f02584056713f7c521b33ba03cb787fc1ff68a277",
+      "assets/index-DqlLJLwa.js": "6b3efa748b81cba9feeeac5635797c7f388dfb861c3fbae4b655f49de2108a1e",
+      "index.html": "608bd068b05f38a90854855abf6e7c5ce2400559f42a6137f17a21a52d6fd61d"
+    },
+    "signedAt": "2026-11-11T22:33:36.841Z",
+    "keyEnvironment": "development",
+    "canonicalPayloadSha256": "a777453d396d12981301dc3eef23b2c6a23802914508097270aaae3ebed49f43"
+  },
+  "signatures": {
+    "publisherHybrid": {
+      "classical": {
+        "algorithm": "ed25519",
+        "keyId": "techies-ea-dev-ed25519-v1",
+        "signatureBase64": "mwqPCjYk7eGgoavFU7Pg7dG8kXC7ljd2YBBsOAixBvN7OPseCiE8h7hGFX3hm50Y4Hz21kKlO6ctHGb8m70eDg=="
+      },
+      "pqc": {
+        "algorithm": "ml-dsa-65",
+        "standard": "NIST-FIPS-204",
+        "keyId": "techies-ea-dev-mldsa65-v1",
+        "signatureBase64": "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"
+      }
+    },
+    "githubProvenance": {
+      "repository": "Techies-T/ea-widget-virtual-office",
+      "workflowRef": ".github/workflows/release-signed-plugin.yml",
+      "commitSha": "local-dev-build",
+      "attestationBundleUrl": null,
+      "attestationVerified": false
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "@techies/ea-widget-virtual-office",
+  "private": true,
+  "version": "3.0.0",
+  "description": "Independent Virtual Office & AI Executive Assistant DM Widget Plugin for EmployeeAgent-Core (EA-Widget Protocol v1 + PQC Hybrid Signed)",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server:watch\" \"vite\"",
+    "server": "node server/index.cjs",
+    "server:watch": "node --watch server/index.cjs",
+    "start": "node server/index.cjs",
+    "build": "vite build",
+    "sign": "node \"../EmployeeAgent-Core/scripts/sign-widget-plugin.cjs\" --dir .",
+    "build:signed": "npm run build && npm run sign"
+  },
+  "dependencies": {
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sqlite3": "^5.1.7"
+  },
+  "overrides": {
+    "tar": "^7.5.21",
+    "minimatch": "^11.0.1",
+    "shell-quote": "^1.8.6",
+    "postcss-selector-parser": "^6.1.5",
+    "@tootallnate/once": "^2.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.0",
+    "autoprefixer": "^10.4.22",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "vite": "^7.2.2"
+  }
+}

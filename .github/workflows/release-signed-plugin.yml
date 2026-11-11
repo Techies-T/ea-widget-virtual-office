@@ -1,0 +1,63 @@
+name: Release PQC-Signed EA Widget Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: write
+  attestations: write
+
+jobs:
+  build-and-sign:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Widget Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies & Audit Critical Vulnerabilities
+        run: |
+          npm ci
+          npm audit --audit-level=critical
+
+      - name: Build Widget Bundle
+        run: npm run build
+
+      - name: Configure AWS Credentials via GitHub OIDC (Zero Static Keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_KMS_SIGNER_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-1' }}
+
+      - name: Sign Manifest & Bundle with PQC Hybrid (Ed25519 + AWS KMS ML-DSA-65)
+        env:
+          AWS_KMS_MLDSA65_KEY_ID: ${{ secrets.AWS_KMS_MLDSA65_KEY_ID }}
+          EA_PLUGIN_PROD_ED25519_PRIVATE_KEY: ${{ secrets.EA_PLUGIN_PROD_ED25519_PRIVATE_KEY }}
+        run: |
+          node scripts/sign-ci.cjs --dir . --mode aws-kms --repo "${{ github.repository }}"
+
+      - name: Generate GitHub Sigstore Build Provenance Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/widget.manifest.json'
+
+      - name: Package Signed Widget Artifact
+        run: |
+          tar -czf ea-widget-virtual-office-${{ github.ref_name }}.tar.gz dist/ server/ package.json package-lock.json Dockerfile
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ea-widget-virtual-office-${{ github.ref_name }}.tar.gz
+            dist/widget.manifest.json
