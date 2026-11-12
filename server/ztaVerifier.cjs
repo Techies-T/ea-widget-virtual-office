@@ -5,6 +5,9 @@ const dotenv = require('dotenv');
 
 // Load plugin-local .env if present; in colocated local dev also load EA-Core's server/development.env
 dotenv.config();
+if (fs.existsSync("/app/data/development.env")) {
+    dotenv.config({ path: "/app/data/development.env", override: false });
+}
 const colocatedDevEnv = path.resolve(__dirname, '../../EmployeeAgent-Core/server/development.env');
 if (process.env.NODE_ENV !== 'production' && fs.existsSync(colocatedDevEnv)) {
     dotenv.config({ path: colocatedDevEnv, override: false });

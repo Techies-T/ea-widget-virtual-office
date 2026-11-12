@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN if [ ! -f dist/index.html ]; then npm run build; fi
 
 ENV NODE_ENV=production
 ENV PORT=8091
