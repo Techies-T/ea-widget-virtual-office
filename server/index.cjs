@@ -108,11 +108,26 @@ async function buildMergedUsersList(agentToken, loginUserId, hostUrl) {
             knownIdleLoggedUsers.delete(uid);
         }
 
+        let parsedAvatar3dConfig = null;
+        if (p.avatar_3d_config) {
+            try {
+                parsedAvatar3dConfig = JSON.parse(p.avatar_3d_config);
+            } catch {
+                parsedAvatar3dConfig = null;
+            }
+        }
+
+        const nowMs = Date.now();
+        const hasActiveEmote = Boolean(
+            p.emote && p.emote_expires_at && Number(p.emote_expires_at) > nowMs
+        );
+
         enriched.push({
             id: uid,
             email: cu.email,
             name: cu.name,
             avatar_url: cu.avatar_url,
+            avatar_3d_config: parsedAvatar3dConfig,
             role: cu.role,
             native_language: cu.native_language || 'ja',
             last_active_at: cu.last_active_at,
@@ -120,6 +135,11 @@ async function buildMergedUsersList(agentToken, loginUserId, hostUrl) {
             is_remote: p.is_remote ?? 0,
             current_room: p.current_room || 'open-space',
             status_text: isOffline ? 'Offline' : p.status_text || 'Active',
+            emote: hasActiveEmote ? p.emote : null,
+            emote_expires_at: hasActiveEmote ? Number(p.emote_expires_at) : null,
+            pos_x: p.pos_x !== undefined && p.pos_x !== null ? Number(p.pos_x) : null,
+            pos_z: p.pos_z !== undefined && p.pos_z !== null ? Number(p.pos_z) : null,
+            rotation_y: p.rotation_y !== undefined && p.rotation_y !== null ? Number(p.rotation_y) : 0,
             unread_count: unreadMap.get(uid) || 0,
             assistant_work_start: p.assistant_work_start || '09:00',
             assistant_work_end: p.assistant_work_end || '17:30',
@@ -147,7 +167,17 @@ app.get('/api/vo/users', requireZtaAgentAuth('read'), async (req, res) => {
 
 app.post('/api/vo/status', requireZtaAgentAuth('execute'), async (req, res) => {
     try {
-        const { current_room, status_text, is_remote, targetUserId } = req.body || {};
+        const {
+            current_room,
+            status_text,
+            is_remote,
+            pos_x,
+            pos_z,
+            rotation_y,
+            emote,
+            emoteDurationMs,
+            targetUserId
+        } = req.body || {};
         const uid = Number(targetUserId || req.user.id);
 
         const existing = await db.getAsync('SELECT * FROM vo_user_presence WHERE user_id = ?', [uid]);
@@ -156,17 +186,51 @@ app.post('/api/vo/status', requireZtaAgentAuth('execute'), async (req, res) => {
         const nextRemote = is_remote !== undefined ? Number(is_remote) : Number(existing?.is_remote ?? 0);
         const nextForcedOffline = String(nextStatus).toLowerCase() === 'offline' ? 1 : 0;
 
+        const parseCoord = (val, fallback) => {
+            if (val === undefined || val === null) return fallback;
+            const num = Number(val);
+            if (!Number.isFinite(num)) return fallback;
+            return Math.max(-50, Math.min(50, num));
+        };
+        const nextPosX = parseCoord(pos_x, existing?.pos_x ?? null);
+        const nextPosZ = parseCoord(pos_z, existing?.pos_z ?? null);
+        const nextRotY = rotation_y !== undefined && Number.isFinite(Number(rotation_y))
+            ? Number(rotation_y)
+            : (existing?.rotation_y ?? 0);
+
+        let nextEmote = existing?.emote ?? null;
+        let nextEmoteExpiresAt = existing?.emote_expires_at ?? null;
+        if (emote !== undefined) {
+            if (emote === null || String(emote).trim() === '') {
+                nextEmote = null;
+                nextEmoteExpiresAt = null;
+            } else {
+                const rawDuration = Number(emoteDurationMs);
+                const durationMs = Number.isFinite(rawDuration)
+                    ? Math.max(1000, Math.min(30000, rawDuration))
+                    : 8000;
+                nextEmote = String(emote).trim().slice(0, 64);
+                nextEmoteExpiresAt = Date.now() + durationMs;
+            }
+        }
+
         await db.runAsync(
             `INSERT INTO vo_user_presence (
                 user_id, current_room, status_text, is_remote, forced_offline,
+                pos_x, pos_z, rotation_y, emote, emote_expires_at,
                 assistant_work_start, assistant_work_end, assistant_break_start, assistant_break_end,
                 assistant_meeting_buffer, assistant_prompt, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
              ON CONFLICT(user_id) DO UPDATE SET
                 current_room = excluded.current_room,
                 status_text = excluded.status_text,
                 is_remote = excluded.is_remote,
                 forced_offline = excluded.forced_offline,
+                pos_x = excluded.pos_x,
+                pos_z = excluded.pos_z,
+                rotation_y = excluded.rotation_y,
+                emote = excluded.emote,
+                emote_expires_at = excluded.emote_expires_at,
                 updated_at = CURRENT_TIMESTAMP`,
             [
                 uid,
@@ -174,6 +238,11 @@ app.post('/api/vo/status', requireZtaAgentAuth('execute'), async (req, res) => {
                 nextStatus,
                 nextRemote,
                 nextForcedOffline,
+                nextPosX,
+                nextPosZ,
+                nextRotY,
+                nextEmote,
+                nextEmoteExpiresAt,
                 existing?.assistant_work_start || '09:00',
                 existing?.assistant_work_end || '17:30',
                 existing?.assistant_break_start || '12:00',
@@ -183,18 +252,127 @@ app.post('/api/vo/status', requireZtaAgentAuth('execute'), async (req, res) => {
             ]
         );
 
+        const activeEmote =
+            nextEmote && nextEmoteExpiresAt && Number(nextEmoteExpiresAt) > Date.now()
+                ? nextEmote
+                : null;
+
         res.json({
             success: true,
             status: {
                 current_room: nextRoom,
                 status_text: nextStatus,
                 is_remote: nextRemote,
-                is_offline: nextForcedOffline === 1
+                is_offline: nextForcedOffline === 1,
+                pos_x: nextPosX,
+                pos_z: nextPosZ,
+                rotation_y: nextRotY,
+                emote: activeEmote,
+                emote_expires_at: activeEmote ? Number(nextEmoteExpiresAt) : null
             }
         });
     } catch (err) {
         console.error('[VO Server] POST /api/vo/status error:', err.message);
         res.status(500).json({ error: 'Failed to update presence status' });
+    }
+});
+
+app.post('/api/vo/analytics/view-modes', requireZtaAgentAuth('read'), async (req, res) => {
+    try {
+        const { mode, durationSeconds } = req.body || {};
+        if (mode !== '3d' && mode !== '2d') {
+            return res.status(400).json({ error: 'Invalid mode. Must be "3d" or "2d".' });
+        }
+        const duration = Math.round(Number(durationSeconds));
+        if (!Number.isFinite(duration) || duration <= 0 || duration > 3600) {
+            return res.status(400).json({ error: 'durationSeconds must be between 1 and 3600.' });
+        }
+
+        await db.runAsync(
+            `INSERT INTO vo_view_mode_logs (user_id, mode, duration_seconds) VALUES (?, ?, ?)`,
+            [req.user.id, mode, duration]
+        );
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[VO Server] POST /api/vo/analytics/view-modes error:', err.message);
+        res.status(500).json({ error: 'Failed to record view mode analytics' });
+    }
+});
+
+app.get('/api/vo/analytics/view-modes', requireZtaAgentAuth('read'), async (req, res) => {
+    try {
+        const rows = await db.allAsync(
+            `SELECT user_id, mode, SUM(duration_seconds) AS total_seconds, COUNT(*) AS sessions
+             FROM vo_view_mode_logs
+             GROUP BY user_id, mode`
+        );
+
+        const myUsage = { '3d': 0, '2d': 0 };
+        const overallUsage = { '3d': 0, '2d': 0 };
+        const userMap = new Map();
+
+        for (const r of rows) {
+            const uid = Number(r.user_id);
+            const mode = r.mode === '3d' ? '3d' : '2d';
+            const secs = Number(r.total_seconds || 0);
+
+            overallUsage[mode] += secs;
+            if (uid === Number(req.user.id)) {
+                myUsage[mode] += secs;
+            }
+            if (!userMap.has(uid)) {
+                userMap.set(uid, { userId: uid, '3d': 0, '2d': 0 });
+            }
+            userMap.get(uid)[mode] += secs;
+        }
+
+        res.json({
+            myUsage,
+            overallUsage,
+            byUser: Array.from(userMap.values())
+        });
+    } catch (err) {
+        console.error('[VO Server] GET /api/vo/analytics/view-modes error:', err.message);
+        res.status(500).json({ error: 'Failed to load view mode analytics' });
+    }
+});
+
+app.post('/api/vo/avatar-3d-cache', requireZtaAgentAuth('read'), async (req, res) => {
+    try {
+        const { userId, config } = req.body || {};
+        const uid = Number(userId);
+        if (!Number.isInteger(uid) || uid <= 0 || !config || typeof config !== 'object') {
+            return res.status(400).json({ error: 'Invalid userId or config' });
+        }
+
+        const sanitizeHex = (val, fallback) =>
+            typeof val === 'string' && /^#[0-9a-fA-F]{6}$/.test(val) ? val : fallback;
+        const allowedHair = new Set(['short', 'medium', 'long']);
+        const sanitized = {
+            avatarHash: String(config.avatarHash || '').slice(0, 128),
+            hairColor: sanitizeHex(config.hairColor, '#334155'),
+            skinColor: sanitizeHex(config.skinColor, '#f5d0b5'),
+            outfitColor: sanitizeHex(config.outfitColor, '#3b82f6'),
+            accentColor: sanitizeHex(config.accentColor, '#1e293b'),
+            hairStyle: allowedHair.has(config.hairStyle) ? config.hairStyle : 'short',
+            updatedAt: new Date().toISOString()
+        };
+
+        const serialized = JSON.stringify(sanitized);
+        await db.runAsync(
+            `INSERT INTO vo_user_presence (user_id, avatar_3d_config, updated_at)
+             VALUES (?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id) DO UPDATE SET
+                avatar_3d_config = excluded.avatar_3d_config,
+                updated_at = CURRENT_TIMESTAMP`,
+            [uid, serialized]
+        );
+
+        res.json({ success: true, avatar_3d_config: sanitized });
+    } catch (err) {
+        console.error('[VO Server] POST /api/vo/avatar-3d-cache error:', err.message);
+        res.status(500).json({ error: 'Failed to save 3D avatar cache' });
     }
 });
 
@@ -594,6 +772,19 @@ app.post('/api/vo/dm/messages', requireZtaAgentAuth('execute'), async (req, res)
     } catch (err) {
         console.error('[VO Server] POST /api/vo/dm/messages error:', err.message);
         res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vo/calendar/upcoming', requireZtaAgentAuth('read'), async (req, res) => {
+    try {
+        const result = await coreClient.fetchUpcomingCalendarEvents(req.agentToken, req.eaHostUrl);
+        res.json({
+            events: Array.isArray(result?.events) ? result.events : [],
+            calendarConnected: Boolean(result?.calendarConnected)
+        });
+    } catch (err) {
+        console.error('[VO Server] GET /api/vo/calendar/upcoming error:', err.message);
+        res.json({ events: [], calendarConnected: false });
     }
 });
 

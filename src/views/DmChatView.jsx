@@ -6,7 +6,21 @@ const LANG_MAP = {
   es: { label: 'Español', flag: '🇪🇸' }
 };
 
-export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId }) {
+const ROOM_BADGES = {
+  'open-space': '🌳 Open Space',
+  'meeting-room-a': '💬 Meeting A',
+  'meeting-room-b': '🎥 Meeting B',
+  'focus-zone': '🤫 Focus Zone',
+  remote: '🏡 Remote'
+};
+
+const QUICK_REPLIES = [
+  { label: '👋 挨拶', text: '👋 こんにちは！少しよろしいですか？' },
+  { label: '☕ 雑談', text: '☕ 休憩ついでに少しお話しできますか？' },
+  { label: '📅 会議相談', text: '📅 本日、少し打ち合わせしたいのですが空いていますか？' }
+];
+
+export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId, onClose }) {
   const { user: currentUser, eaFetch, hasMinLevel } = ctx;
   const canExecute = hasMinLevel('execute');
 
@@ -135,21 +149,18 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [messages, isTyping]);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-    if (!canExecute || !inputValue.trim()) return;
+  const sendMessageText = async (rawText) => {
+    const trimmed = String(rawText || '').trim();
+    if (!canExecute || !trimmed) return;
 
-    const textToSend = inputValue;
-    setInputValue('');
     setIsTyping(true);
-
     try {
       const res = await eaFetch('/api/vo/dm/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           receiverId: targetUser.id,
-          text: textToSend
+          text: trimmed
         })
       });
       if (res.ok) {
@@ -162,6 +173,15 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
         setIsTyping(false);
       }, 1000);
     }
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!canExecute || !inputValue.trim()) return;
+
+    const textToSend = inputValue;
+    setInputValue('');
+    await sendMessageText(textToSend);
   };
 
   const getDisplayMessages = () => {
@@ -418,23 +438,32 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
   };
 
   const isTargetOffline = !!(targetUser.is_offline || (targetUser.status_text || '').toLowerCase() === 'offline');
+  const roomBadge = isTargetOffline
+    ? '⚫ Offline'
+    : ROOM_BADGES[targetUser.current_room] || '🏢 Office';
 
   return (
-    <div className="h-full flex flex-col bg-[#0b0f19] text-[#e2e8f0] overflow-hidden font-sans">
-      <div className="flex items-center justify-between px-5 py-3 bg-[#111827]/85 border-b border-gray-800 backdrop-blur-md">
-        <div className="flex items-center space-x-3">
-          <div className="relative">
+    <div className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-slate-900 via-slate-900/95 to-indigo-950/60 border-b border-slate-800/90 backdrop-blur-md">
+        <div className="flex items-center space-x-3 min-w-0">
+          <div className="relative flex-shrink-0">
             <div
-              className={`w-10 h-10 rounded-xl overflow-hidden bg-gray-900 border border-gray-800 ${
-                isTargetOffline ? 'opacity-50 grayscale-[60%]' : ''
+              className={`w-10 h-10 rounded-xl overflow-hidden bg-slate-900 border-2 shadow-md ${
+                isTargetOffline
+                  ? 'border-slate-700 opacity-50 grayscale-[60%]'
+                  : targetUser.current_room === 'focus-zone'
+                    ? 'border-amber-400/70'
+                    : targetUser.is_remote
+                      ? 'border-cyan-400/70'
+                      : 'border-emerald-400/70'
               }`}
             >
               <img src={targetUser.avatar_url} alt={targetUser.name} className="w-full h-full object-cover" />
             </div>
             <div
-              className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#111827] ${
+              className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-slate-900 ${
                 isTargetOffline
-                  ? 'bg-gray-500'
+                  ? 'bg-slate-500'
                   : targetUser.current_room === 'focus-zone'
                     ? 'bg-amber-400'
                     : targetUser.current_room === 'remote'
@@ -443,41 +472,56 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
               }`}
             />
           </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <h3 className="font-bold text-sm text-gray-100">{targetUser.name}</h3>
-              <span className="px-1.5 py-0.5 rounded-md bg-indigo-950/60 border border-indigo-500/40 text-[9px] text-indigo-300 font-semibold inline-flex items-center gap-1">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h3 className="font-bold text-sm text-white truncate">{targetUser.name}</h3>
+              <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-400/30 text-[9px] text-indigo-200 font-semibold inline-flex items-center gap-1">
                 <span>{targetLang.flag}</span>
                 <span>{targetLang.label}</span>
               </span>
             </div>
-            <p className="text-[10px] text-gray-500">
-              {isTargetOffline ? '⚫ Offline' : targetUser.is_remote ? '🏡 Remote Active' : '🏢 Office Active'}
-              <span className="mx-1.5">•</span>
-              Status: {isTargetOffline ? 'Offline' : targetUser.status_text || 'Active'}
-            </p>
+            <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-slate-400 truncate">
+              <span className="px-1.5 py-0.5 rounded bg-slate-800/90 border border-slate-700/70 text-[9px] font-semibold text-slate-300">
+                {roomBadge}
+              </span>
+              <span className="truncate">
+                {isTargetOffline ? '離席中' : targetUser.status_text || 'Active'}
+              </span>
+            </div>
           </div>
         </div>
 
-        {isDifferentLang ? (
-          <div className="flex items-center gap-1.5 bg-indigo-500/20 border border-indigo-500/40 px-2.5 py-1 rounded-lg">
-            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-            <span className="text-[10px] font-bold text-cyan-300">
-              🦙 Gemma 4 通訳中 ({senderLang.flag} ➔ {targetLang.flag})
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg">
-            <span className="text-[10px] font-medium text-gray-400">💬 ダイレクトチャット ({targetLang.flag})</span>
-          </div>
-        )}
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {isDifferentLang ? (
+            <div className="flex items-center gap-1 bg-cyan-500/15 border border-cyan-400/35 px-2 py-1 rounded-lg">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+              <span className="text-[9px] font-bold text-cyan-200 whitespace-nowrap">
+                {senderLang.flag}➔{targetLang.flag}
+              </span>
+            </div>
+          ) : (
+            <div className="hidden sm:flex items-center gap-1 bg-slate-800/70 border border-slate-700/70 px-2 py-1 rounded-lg">
+              <span className="text-[9px] font-semibold text-slate-300">💬 DM</span>
+            </div>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="チャットを閉じる"
+              className="w-7 h-7 flex items-center justify-center rounded-lg bg-slate-800/90 hover:bg-slate-700 text-slate-400 hover:text-white border border-slate-700 transition cursor-pointer text-xs"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 p-5 overflow-y-auto space-y-4 bg-[#0b0f19]/30">
+      <div className="flex-1 px-4 py-4 overflow-y-auto space-y-4 bg-gradient-to-b from-slate-950 via-[#0b0f19] to-slate-950">
         {displayMessages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
             <div
-              className={`flex items-end space-x-2 max-w-[75%] ${
+              className={`flex items-end space-x-2 max-w-[82%] ${
                 msg.sender === 'me' ? 'flex-row-reverse space-x-reverse' : 'flex-row'
               }`}
             >
@@ -485,32 +529,32 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
                 <img
                   src={targetUser.avatar_url}
                   alt={targetUser.name}
-                  className="w-6 h-6 rounded-md bg-gray-800 object-cover flex-shrink-0"
+                  className="w-6 h-6 rounded-lg bg-slate-800 object-cover flex-shrink-0 border border-slate-700"
                 />
               )}
               {msg.sender === 'assistant' && (
-                <div className="w-6 h-6 rounded-md flex-shrink-0 bg-indigo-950/80 border border-indigo-500/30 flex items-center justify-center text-xs shadow-sm select-none">
+                <div className="w-6 h-6 rounded-lg flex-shrink-0 bg-indigo-950/90 border border-indigo-400/40 flex items-center justify-center text-xs shadow-sm select-none">
                   🤖
                 </div>
               )}
               <div className="flex flex-col">
                 {msg.sender === 'assistant' && (
-                  <span className="text-[8px] text-indigo-400 font-bold mb-0.5 ml-1 select-none">
+                  <span className="text-[9px] text-indigo-300 font-bold mb-0.5 ml-1 select-none">
                     {targetUser.name}のアシスタント
                   </span>
                 )}
                 <div
-                  className={`px-4 py-2.5 rounded-2xl text-xs leading-relaxed shadow-sm break-all ${
+                  className={`px-3.5 py-2.5 rounded-2xl text-xs leading-relaxed shadow-md break-words ${
                     msg.sender === 'me'
-                      ? 'bg-indigo-600 text-white rounded-br-none'
+                      ? 'bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-br-sm'
                       : msg.sender === 'assistant'
-                        ? 'bg-[#151124]/90 text-indigo-100 border border-indigo-500/30 rounded-bl-none relative pr-4'
-                        : 'bg-gray-900 text-gray-200 border border-gray-800 rounded-bl-none'
+                        ? 'bg-indigo-950/60 text-indigo-100 border border-indigo-500/35 rounded-bl-sm'
+                        : 'bg-slate-900 text-slate-100 border border-slate-800 rounded-bl-sm'
                   }`}
                 >
                   {renderMessageBody(msg.text)}
                 </div>
-                <span className="text-[8px] text-gray-600 mt-1 self-end">{msg.time}</span>
+                <span className="text-[9px] text-slate-500 mt-1 self-end px-1">{msg.time}</span>
               </div>
             </div>
           </div>
@@ -518,11 +562,11 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
 
         {isTyping && (
           <div className="flex justify-start">
-            <div className="flex items-center space-x-2 bg-gray-900 border border-gray-800 px-4 py-2.5 rounded-2xl rounded-bl-none">
+            <div className="flex items-center space-x-2 bg-slate-900 border border-slate-800 px-4 py-2.5 rounded-2xl rounded-bl-sm">
               <div className="flex space-x-1">
-                <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
             </div>
           </div>
@@ -531,19 +575,35 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
         <div ref={messagesEndRef} />
       </div>
 
-      <form onSubmit={handleSendMessage} className="p-4 bg-[#111827]/55 border-t border-gray-800 flex items-center space-x-3">
+      {/* クイック声かけチップ */}
+      {canExecute && (
+        <div className="px-3 pt-2 pb-1 bg-slate-900/70 border-t border-slate-800/80 flex items-center gap-1.5 overflow-x-auto">
+          {QUICK_REPLIES.map((chip) => (
+            <button
+              key={chip.label}
+              type="button"
+              onClick={() => sendMessageText(chip.text)}
+              className="px-2.5 py-1 rounded-full bg-slate-800/90 hover:bg-indigo-600/30 border border-slate-700 hover:border-indigo-400/50 text-[10px] font-semibold text-slate-300 hover:text-white whitespace-nowrap transition cursor-pointer"
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <form onSubmit={handleSendMessage} className="p-3 bg-slate-900/90 border-t border-slate-800/70 flex items-center space-x-2">
         <input
           type="text"
           disabled={!canExecute}
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder={canExecute ? `${targetUser.name}さんにメッセージを送信...` : '閲覧専用モードのため送信できません'}
-          className="flex-1 bg-gray-950 border border-gray-800 rounded-xl px-4 py-2 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
+          className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
         />
         <button
           type="submit"
-          disabled={!canExecute}
-          className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl px-4 py-2 text-xs font-semibold shadow-sm transition"
+          disabled={!canExecute || !inputValue.trim()}
+          className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-45 text-white rounded-xl px-4 py-2 text-xs font-bold shadow-sm transition cursor-pointer"
         >
           送信
         </button>

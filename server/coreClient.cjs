@@ -74,6 +74,10 @@ async function fetchCommonFreeSlots(agentToken, targetEmail, settings, hostUrl) 
     });
 }
 
+async function fetchUpcomingCalendarEvents(agentToken, hostUrl) {
+    return callCoreHostApi('/calendar/events', agentToken, { hostUrl });
+}
+
 async function createCalendarEvent(agentToken, eventBody, hostUrl) {
     return callCoreHostApi('/calendar/events', agentToken, {
         method: 'POST',
@@ -103,6 +107,7 @@ module.exports = {
     translateViaCore,
     generateAssistantReplyViaCore,
     fetchCommonFreeSlots,
+    fetchUpcomingCalendarEvents,
     createCalendarEvent,
     logCoreAudit
 };

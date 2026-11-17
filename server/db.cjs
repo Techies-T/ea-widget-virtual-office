@@ -46,6 +46,46 @@ rawDb.serialize(() => {
         CREATE INDEX IF NOT EXISTS idx_vo_dm_pair
         ON vo_dm_messages (sender_id, receiver_id, is_read, created_at)
     `);
+
+    // 3D Virtual Office: アバター座標カラムのマイグレーション
+    rawDb.all(`PRAGMA table_info(vo_user_presence)`, (err, columns) => {
+        if (err || !Array.isArray(columns)) return;
+        const colNames = new Set(columns.map((c) => c.name));
+        if (!colNames.has('pos_x')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN pos_x REAL DEFAULT NULL`);
+        }
+        if (!colNames.has('pos_z')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN pos_z REAL DEFAULT NULL`);
+        }
+        if (!colNames.has('rotation_y')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN rotation_y REAL DEFAULT 0`);
+        }
+        if (!colNames.has('avatar_3d_config')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN avatar_3d_config TEXT DEFAULT NULL`);
+        }
+        if (!colNames.has('emote')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN emote TEXT DEFAULT NULL`);
+        }
+        if (!colNames.has('emote_expires_at')) {
+            rawDb.run(`ALTER TABLE vo_user_presence ADD COLUMN emote_expires_at INTEGER DEFAULT NULL`);
+        }
+    });
+
+    // A/B テスト・利用時間計測用テーブル (3D / 2D 滞在時間ログ)
+    rawDb.run(`
+        CREATE TABLE IF NOT EXISTS vo_view_mode_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            mode TEXT NOT NULL CHECK(mode IN ('3d', '2d')),
+            duration_seconds INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+
+    rawDb.run(`
+        CREATE INDEX IF NOT EXISTS idx_vo_view_mode_user
+        ON vo_view_mode_logs (user_id, mode, created_at)
+    `);
 });
 
 function runAsync(sql, params = []) {

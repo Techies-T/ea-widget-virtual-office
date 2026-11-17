@@ -1,6 +1,20 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import VirtualOffice3DCanvas from '../components/office3d/VirtualOffice3DCanvas.jsx';
+import MiniMapHUD from '../components/office3d/MiniMapHUD.jsx';
+import DmChatView from './DmChatView.jsx';
 
 const DEFAULT_AVATAR_SEEDS = ['Oliver', 'Jake', 'Charlie', 'Luna', 'Bella', 'Milo', 'Coco', 'Cookie'];
+
+const EMOTE_PRESETS = [
+  { id: 'greet', label: '👋 挨拶', title: '挨拶する' },
+  { id: 'break', label: '☕ 休憩', title: 'ちょっと休憩中' },
+  { id: 'focus', label: '💻 集中', title: '作業に集中' },
+  { id: 'nice', label: '🎉 ナイス', title: 'ナイス！' },
+  { id: 'chat', label: '💬 雑談OK', title: 'いつでも雑談OK' }
+];
+
+const MEETING_ROOM_A_TARGET = { x: -9.6, z: -4.2, label: 'Meeting Room A' };
+const MEETING_ROOM_B_TARGET = { x: 9.6, z: -4.2, label: 'Meeting Room B' };
 
 const ROOMS = {
   'open-space': { name: '🌳 Open Space', desc: '会話自由・カジュアルな相談向け', color: 'border-emerald-500/30 bg-emerald-500/5' },
@@ -23,8 +37,36 @@ export default function VirtualOfficeView({ ctx }) {
   const [defaultAssistantPrompt, setDefaultAssistantPrompt] = useState('');
   const [activeSettingsTab, setActiveSettingsTab] = useState('basic');
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('vo_view_mode') === '2d' ? '2d' : '3d';
+    } catch {
+      return '3d';
+    }
+  });
+  const [chatTargetUser, setChatTargetUser] = useState(null);
+  const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
+  const [viewAnalytics, setViewAnalytics] = useState(null);
+
+  // 3D HUD & AI Meeting Assistant States
+  const [autoMoveTarget, setAutoMoveTarget] = useState(null);
+  const [myPosition, setMyPosition] = useState(null);
+  const [nearbyUser, setNearbyUser] = useState(null);
+  const [myEmote, setMyEmote] = useState(null);
+  const [transientBubbles, setTransientBubbles] = useState({});
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [testMeetings, setTestMeetings] = useState([]);
+  const [calendarConnected, setCalendarConnected] = useState(false);
+  const [assistantNotification, setAssistantNotification] = useState(null);
+  const [isMeetingWidgetCollapsed, setIsMeetingWidgetCollapsed] = useState(false);
 
   const settingsDialogRef = useRef(null);
+  const activeStartRef = useRef(Date.now());
+  const viewModeRef = useRef(viewMode);
+  const emoteTimeoutRef = useRef(null);
+  const bubbleTimeoutsRef = useRef(new Map());
+  const greetCooldownRef = useRef(new Map());
+  const notifiedEventIdsRef = useRef(new Set());
 
   const canExecute = hasMinLevel('execute');
   const allowedActions = user?.allowed_actions || [];
@@ -348,6 +390,389 @@ export default function VirtualOfficeView({ ctx }) {
     });
   };
 
+  const formatDuration = (totalSeconds) => {
+    const secs = Math.max(0, Math.round(Number(totalSeconds) || 0));
+    const hours = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    const remSecs = secs % 60;
+    if (hours > 0) return `${hours}時間 ${mins}分`;
+    if (mins > 0) return `${mins}分 ${remSecs}秒`;
+    return `${remSecs}秒`;
+  };
+
+  const flushViewModeDuration = useCallback(async (targetMode) => {
+    if (!activeStartRef.current) return;
+    const elapsedSec = Math.round((Date.now() - activeStartRef.current) / 1000);
+    activeStartRef.current = document.visibilityState === 'visible' ? Date.now() : null;
+    if (elapsedSec < 1 || elapsedSec > 3600) return;
+    try {
+      await eaFetch('/api/vo/analytics/view-modes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: targetMode, durationSeconds: elapsedSec })
+      });
+    } catch {
+      // ignore analytics transient errors
+    }
+  }, [eaFetch]);
+
+  const loadViewAnalytics = useCallback(async () => {
+    try {
+      const res = await eaFetch('/api/vo/analytics/view-modes');
+      if (res.ok) {
+        const data = await res.json();
+        setViewAnalytics(data);
+      }
+    } catch (err) {
+      console.error('[VirtualOfficePlugin] Failed to load view analytics:', err);
+    }
+  }, [eaFetch]);
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+    try {
+      localStorage.setItem('vo_view_mode', viewMode);
+    } catch {
+      // ignore storage errors
+    }
+  }, [viewMode]);
+
+  useEffect(() => {
+    activeStartRef.current = document.visibilityState === 'visible' ? Date.now() : null;
+
+    const heartbeat = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        flushViewModeDuration(viewModeRef.current);
+      }
+    }, 30000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushViewModeDuration(viewModeRef.current);
+      } else {
+        activeStartRef.current = Date.now();
+      }
+    };
+
+    const handlePageHide = () => {
+      flushViewModeDuration(viewModeRef.current);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      clearInterval(heartbeat);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      flushViewModeDuration(viewModeRef.current);
+    };
+  }, [flushViewModeDuration]);
+
+  const handleSwitchViewMode = async (nextMode) => {
+    if (nextMode === viewMode) return;
+    await flushViewModeDuration(viewMode);
+    activeStartRef.current = Date.now();
+    setViewMode(nextMode);
+  };
+
+  const handleSyncPosition = useCallback(async (posX, posZ, rotationY, zoneId) => {
+    if (!canExecute) return;
+    const nextStatusText =
+      zoneId === 'focus-zone' ? 'Busy' : zoneId === 'remote' ? 'Home Office' : 'Active';
+
+    setMyStatus((prev) => ({ ...prev, room: zoneId }));
+    setUsers((prev) =>
+      prev.map((u) =>
+        Number(u.id) === Number(user?.id)
+          ? {
+              ...u,
+              current_room: zoneId,
+              pos_x: posX,
+              pos_z: posZ,
+              rotation_y: rotationY,
+              is_remote: zoneId === 'remote' ? 1 : 0,
+              status_text: nextStatusText
+            }
+          : u
+      )
+    );
+
+    try {
+      await eaFetch('/api/vo/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_room: zoneId,
+          status_text: nextStatusText,
+          is_remote: zoneId === 'remote' ? 1 : 0,
+          pos_x: posX,
+          pos_z: posZ,
+          rotation_y: rotationY
+        })
+      });
+    } catch (err) {
+      console.error('[VirtualOfficePlugin] Failed to sync 3D position:', err);
+    }
+  }, [canExecute, eaFetch, user?.id]);
+
+  const handleTalkToUser = useCallback((targetMember) => {
+    if (!targetMember) return;
+    setSelectedUser(targetMember);
+    setChatTargetUser(targetMember);
+  }, []);
+
+  const setTransientBubble = useCallback((targetUserId, bubbleObj, durationMs = 5000) => {
+    const uid = Number(targetUserId);
+    if (!uid) return;
+    const prevTimer = bubbleTimeoutsRef.current.get(uid);
+    if (prevTimer) clearTimeout(prevTimer);
+
+    setTransientBubbles((prev) => ({ ...prev, [uid]: bubbleObj }));
+
+    const nextTimer = setTimeout(() => {
+      setTransientBubbles((prev) => {
+        if (!prev[uid]) return prev;
+        const copy = { ...prev };
+        delete copy[uid];
+        return copy;
+      });
+      bubbleTimeoutsRef.current.delete(uid);
+    }, durationMs);
+
+    bubbleTimeoutsRef.current.set(uid, nextTimer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (emoteTimeoutRef.current) clearTimeout(emoteTimeoutRef.current);
+      for (const t of bubbleTimeoutsRef.current.values()) {
+        clearTimeout(t);
+      }
+      bubbleTimeoutsRef.current.clear();
+    };
+  }, []);
+
+  const handleTriggerEmote = useCallback(async (emoteText) => {
+    if (!emoteText) return;
+    if (emoteTimeoutRef.current) clearTimeout(emoteTimeoutRef.current);
+
+    setMyEmote(emoteText);
+    if (user?.id) {
+      setUsers((prev) =>
+        prev.map((u) => (Number(u.id) === Number(user.id) ? { ...u, emote: emoteText } : u))
+      );
+    }
+
+    emoteTimeoutRef.current = setTimeout(() => {
+      setMyEmote(null);
+      if (user?.id) {
+        setUsers((prev) =>
+          prev.map((u) => (Number(u.id) === Number(user.id) ? { ...u, emote: null } : u))
+        );
+      }
+    }, 8000);
+
+    if (!canExecute) return;
+    try {
+      await eaFetch('/api/vo/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emote: emoteText,
+          emoteDurationMs: 8000
+        })
+      });
+    } catch (err) {
+      console.error('[VirtualOfficePlugin] Failed to sync emote:', err);
+    }
+  }, [canExecute, eaFetch, user?.id]);
+
+  const handlePositionUpdate = useCallback(({ x, z, zoneId }) => {
+    setMyPosition({ x, z, zoneId });
+  }, []);
+
+  const handleNearbyUserChange = useCallback((target) => {
+    setNearbyUser(target || null);
+    if (!target || Number(target.id) === Number(user?.id) || target.is_offline) return;
+
+    const now = Date.now();
+    const lastGreeted = greetCooldownRef.current.get(target.id) || 0;
+    if (now - lastGreeted > 45000) {
+      greetCooldownRef.current.set(target.id, now);
+      if (user?.id) {
+        setTransientBubble(
+          user.id,
+          { text: `👋 ${target.name}さん、こんにちは！`, type: 'greeting' },
+          5000
+        );
+      }
+      setTransientBubble(target.id, { text: '👋 こんにちは！', type: 'greeting' }, 4500);
+    }
+  }, [setTransientBubble, user?.id]);
+
+  const handleNavigateTo = useCallback((target) => {
+    if (!target) return;
+    setAutoMoveTarget({
+      x: target.x,
+      z: target.z,
+      label: target.label || 'Office',
+      seq: Date.now()
+    });
+  }, []);
+
+  const userBubbles = useMemo(() => {
+    const map = {};
+    for (const u of users) {
+      if (u.emote) {
+        if (Number(u.id) === Number(user?.id) && myEmote === null) continue;
+        map[u.id] = { text: u.emote, type: 'emote' };
+      }
+    }
+    for (const [uid, b] of Object.entries(transientBubbles)) {
+      if (b && b.text) {
+        map[uid] = b;
+      }
+    }
+    return map;
+  }, [users, transientBubbles, user?.id, myEmote]);
+
+  // 1) Google カレンダー直近予定の定期取得
+  const loadUpcomingCalendar = useCallback(async () => {
+    try {
+      const res = await eaFetch('/api/vo/calendar/upcoming');
+      if (res.ok) {
+        const data = await res.json();
+        setCalendarEvents(Array.isArray(data.events) ? data.events : []);
+        setCalendarConnected(Boolean(data.calendarConnected));
+      }
+    } catch {
+      // ignore transient calendar fetch error
+    }
+  }, [eaFetch]);
+
+  useEffect(() => {
+    loadUpcomingCalendar();
+    const timer = setInterval(loadUpcomingCalendar, 30000);
+    return () => clearInterval(timer);
+  }, [loadUpcomingCalendar]);
+
+  const handleAddTestMeeting = useCallback(() => {
+    const now = Date.now();
+    const startMs = now + 4 * 60 * 1000 + 55 * 1000;
+    const endMs = startMs + 30 * 60 * 1000;
+    const newEvent = {
+      id: `test-meeting-${now}`,
+      summary: '定例スプリント会議 (テスト)',
+      start: { dateTime: new Date(startMs).toISOString() },
+      end: { dateTime: new Date(endMs).toISOString() },
+      isTest: true
+    };
+    setTestMeetings((prev) => [...prev.slice(-3), newEvent]);
+    setIsMeetingWidgetCollapsed(false);
+  }, []);
+
+  const allUpcomingEvents = useMemo(() => {
+    const now = Date.now();
+    return [...calendarEvents, ...testMeetings]
+      .filter((ev) => {
+        const startMs = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
+        const endMs = new Date(ev.end?.dateTime || ev.end?.date || startMs + 30 * 60 * 1000).getTime();
+        return Number.isFinite(startMs) && endMs > now - 60 * 1000;
+      })
+      .sort((a, b) => {
+        const sa = new Date(a.start?.dateTime || a.start?.date || 0).getTime();
+        const sb = new Date(b.start?.dateTime || b.start?.date || 0).getTime();
+        return sa - sb;
+      });
+  }, [calendarEvents, testMeetings]);
+
+  // 2) 会議開始 5分前〜開始時刻の AI アシスタント通知 ＆ 自動会議室移動
+  useEffect(() => {
+    const checkMeetings = () => {
+      const now = Date.now();
+      for (const ev of allUpcomingEvents) {
+        const startMs = new Date(ev.start?.dateTime || ev.start?.date || 0).getTime();
+        if (!Number.isFinite(startMs)) continue;
+        const diffMs = startMs - now;
+        if (diffMs <= 5 * 60 * 1000 && diffMs >= -60 * 1000 && !notifiedEventIdsRef.current.has(ev.id)) {
+          notifiedEventIdsRef.current.add(ev.id);
+          const minsLeft = Math.max(1, Math.ceil(diffMs / 60000));
+          const summary = ev.summary || 'ミーティング';
+          const startTimeStr = new Date(startMs).toLocaleTimeString('ja-JP', {
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+          const message = `🤖 あと${minsLeft}分で『${summary}』が始まります！会議室へ移動しますね`;
+
+          setAssistantNotification({
+            id: ev.id,
+            summary,
+            minsLeft,
+            startTimeStr,
+            message
+          });
+
+          if (user?.id) {
+            setTransientBubble(
+              user.id,
+              { text: `🤖 あと${minsLeft}分で会議！移動します`, type: 'assistant' },
+              7000
+            );
+          }
+
+          setAutoMoveTarget({
+            ...MEETING_ROOM_A_TARGET,
+            seq: Date.now()
+          });
+
+          if (viewModeRef.current === '2d' && canExecute) {
+            handleUpdateMyStatus('meeting-room-a', 'In a Meeting');
+          }
+          break;
+        }
+      }
+    };
+
+    checkMeetings();
+    const timer = setInterval(checkMeetings, 5000);
+    return () => clearInterval(timer);
+  }, [allUpcomingEvents, canExecute, setTransientBubble, user?.id]);
+
+  const avatar3dSavedHashesRef = useRef(new Map());
+  const handleCacheAvatar3D = useCallback(async (targetUserId, config) => {
+    if (!targetUserId || !config?.avatarHash) return;
+    const prevHash = avatar3dSavedHashesRef.current.get(targetUserId);
+    if (prevHash === config.avatarHash) return;
+    avatar3dSavedHashesRef.current.set(targetUserId, config.avatarHash);
+
+    setUsers((prev) =>
+      prev.map((u) => (Number(u.id) === Number(targetUserId) ? { ...u, avatar_3d_config: config } : u))
+    );
+
+    try {
+      await eaFetch('/api/vo/avatar-3d-cache', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: targetUserId, config })
+      });
+    } catch {
+      // ignore transient cache save errors
+    }
+  }, [eaFetch]);
+
+  const onlineCount = useMemo(() => users.filter((u) => !u.is_offline).length, [users]);
+  const nextUpcomingEvent = allUpcomingEvents[0] || null;
+  const nextEventCountdownLabel = useMemo(() => {
+    if (!nextUpcomingEvent) return '';
+    const startMs = new Date(nextUpcomingEvent.start?.dateTime || nextUpcomingEvent.start?.date || 0).getTime();
+    const diffMin = Math.ceil((startMs - Date.now()) / 60000);
+    if (diffMin <= 0) return 'まもなく開始';
+    if (diffMin < 60) return `あと${diffMin}分`;
+    const h = Math.floor(diffMin / 60);
+    const m = diffMin % 60;
+    return `あと${h}時間${m > 0 ? `${m}分` : ''}`;
+  }, [nextUpcomingEvent]);
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-full p-8 bg-[#0b0f19] text-gray-400">
@@ -360,54 +785,329 @@ export default function VirtualOfficeView({ ctx }) {
   return (
     <div className="h-full flex flex-col bg-[#0b0f19] text-[#e2e8f0] overflow-hidden font-sans select-none">
       {/* Control Bar */}
-      <div className="flex justify-between items-center px-6 py-4 bg-[#111827]/80 border-b border-gray-800 backdrop-blur-md">
+      <div className="flex justify-between items-center px-5 py-3 bg-gradient-to-r from-slate-900/95 via-[#0f172a]/95 to-indigo-950/75 border-b border-slate-800/90 backdrop-blur-md gap-3 flex-wrap">
         <div className="flex items-center space-x-3">
-          <span className="text-2xl">🏢</span>
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-400/30 flex items-center justify-center text-xl shadow-inner">
+            🏢
+          </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-gray-100">Virtual Workspace</h2>
-              <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold text-emerald-300">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-extrabold tracking-tight text-white">Virtual Workspace</h2>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[9px] font-bold text-emerald-300 inline-flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                {onlineCount}/{users.length} Online
+              </span>
+              <span className="hidden md:inline-flex px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-400/25 text-[9px] font-bold text-indigo-300">
                 🛡️ PQC Plugin v3.0
               </span>
             </div>
-            <p className="text-[10px] text-gray-500">メンバーのリアルタイムな所在と出社ステータス</p>
+            <p className="text-[10px] text-slate-400">3Dオフィス空間・AIアシスタント連携・リアルタイム在席ステータス</p>
           </div>
         </div>
 
-        {/* My Status Trigger */}
-        {canExecute ? (
-          <div className="flex items-center space-x-3 bg-gray-900/60 p-2 rounded-xl border border-gray-800">
-            <span className="text-xs font-semibold text-gray-400">My Status:</span>
-            <select
-              value={myStatus.room}
-              onChange={(e) =>
-                handleUpdateMyStatus(
-                  e.target.value,
-                  e.target.value === 'focus-zone'
-                    ? 'Busy'
-                    : e.target.value === 'remote'
-                      ? 'Home Office'
-                      : 'Active'
-                )
-              }
-              className="bg-gray-800 border border-gray-700 text-xs rounded-lg px-2 py-1 text-gray-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+        {/* Right Controls: 3D/2D Toggle, Test Meeting, Analytics, Assistant Settings, My Status */}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex items-center bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+            <button
+              type="button"
+              onClick={() => handleSwitchViewMode('3d')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === '3d'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
             >
-              <option value="open-space">🌳 オープンスペース</option>
-              <option value="meeting-room-a">💬 会議室 A</option>
-              <option value="meeting-room-b">🎥 会議室 B</option>
-              <option value="focus-zone">🤫 集中ゾーン</option>
-              <option value="remote">🏡 自宅 (リモート)</option>
-            </select>
+              🧊 3D
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSwitchViewMode('2d')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                viewMode === '2d'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              🗺️ 2D
+            </button>
           </div>
-        ) : (
-          <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] font-bold text-amber-300">
-            👁️ 閲覧専用モード (ZTA Read)
-          </div>
-        )}
+
+          <button
+            type="button"
+            onClick={() => {
+              loadViewAnalytics();
+              setIsAnalyticsOpen(true);
+            }}
+            title="3D / 2D 利用統計を表示"
+            className="px-2.5 py-1.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 text-xs font-semibold text-slate-300 transition cursor-pointer"
+          >
+            📊 利用統計
+          </button>
+
+          {canManageRules && (
+            <button
+              type="button"
+              onClick={() => {
+                const me = users.find((u) => Number(u.id) === Number(user?.id));
+                if (me) setSelectedUser(me);
+                setIsSettingsModalOpen(true);
+              }}
+              title="自分のAIアシスタント設定を開く"
+              className="px-2.5 py-1.5 rounded-xl bg-indigo-950/70 hover:bg-indigo-900/80 border border-indigo-500/35 text-xs font-semibold text-indigo-200 transition cursor-pointer"
+            >
+              🤖 AI設定
+            </button>
+          )}
+
+          {/* My Status Trigger */}
+          {canExecute ? (
+            <div className="flex items-center space-x-2 bg-slate-900/80 p-1 rounded-xl border border-slate-700/80">
+              <span className="text-[11px] font-semibold text-slate-400 pl-2">📍</span>
+              <select
+                value={myStatus.room}
+                onChange={(e) =>
+                  handleUpdateMyStatus(
+                    e.target.value,
+                    e.target.value === 'focus-zone'
+                      ? 'Busy'
+                      : e.target.value === 'remote'
+                        ? 'Home Office'
+                        : 'Active'
+                  )
+                }
+                className="bg-slate-800/90 border border-slate-700 text-xs rounded-lg px-2 py-1 text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+              >
+                <option value="open-space">🌳 オープンスペース</option>
+                <option value="meeting-room-a">💬 会議室 A</option>
+                <option value="meeting-room-b">🎥 会議室 B</option>
+                <option value="focus-zone">🤫 集中ゾーン</option>
+                <option value="remote">🏡 自宅 (リモート)</option>
+              </select>
+            </div>
+          ) : (
+            <div className="px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] font-bold text-amber-300">
+              👁️ 閲覧専用モード (ZTA Read)
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Main Area */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="relative flex-1 flex overflow-hidden">
+        {/* AI アシスタント 会議5分前通知バナー（3D/2D共通） */}
+        {assistantNotification && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 w-[92%] max-w-lg pointer-events-auto">
+            <div className="flex items-start gap-3 px-4 py-3 rounded-2xl bg-gradient-to-r from-indigo-950/95 via-slate-900/95 to-violet-950/95 border border-indigo-400/60 shadow-2xl shadow-indigo-950/60 backdrop-blur-md">
+              <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-400/50 flex items-center justify-center text-lg flex-shrink-0 animate-bounce">
+                🤖
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-indigo-300">
+                    AI Meeting Assistant
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/40 text-[9px] font-bold text-amber-200">
+                    {assistantNotification.startTimeStr} 開始
+                  </span>
+                </div>
+                <p className="text-xs font-bold text-white mt-0.5 leading-snug">
+                  {assistantNotification.message}
+                </p>
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handleNavigateTo(MEETING_ROOM_A_TARGET)}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold transition cursor-pointer"
+                  >
+                    💬 Meeting Room A へ移動
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigateTo(MEETING_ROOM_B_TARGET)}
+                    className="px-2.5 py-1 rounded-lg bg-violet-600/80 hover:bg-violet-500 text-white text-[10px] font-bold transition cursor-pointer"
+                  >
+                    🎥 Meeting Room B へ移動
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAssistantNotification(null)}
+                title="通知を閉じる"
+                className="text-slate-400 hover:text-white text-xs p-1 rounded-lg hover:bg-slate-800/80 transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
+        {viewMode === '3d' ? (
+          <div className="relative flex-1 h-full overflow-hidden">
+            {error && (
+              <div className="absolute top-3 right-3 z-20 bg-red-500/90 border border-red-400 text-white px-3 py-2 rounded-lg text-xs shadow-lg">
+                ⚠️ {error}
+              </div>
+            )}
+            <VirtualOffice3DCanvas
+              users={users}
+              currentUserId={user?.id}
+              selectedUserId={selectedUser?.id}
+              onSelectUser={setSelectedUser}
+              onTalkToUser={handleTalkToUser}
+              onSyncPosition={handleSyncPosition}
+              onCacheAvatar3D={handleCacheAvatar3D}
+              canExecute={canExecute}
+              autoMoveTarget={autoMoveTarget}
+              onPositionUpdate={handlePositionUpdate}
+              onNearbyUserChange={handleNearbyUserChange}
+              myEmote={myEmote}
+              userBubbles={userBubbles}
+            />
+
+            {/* 左上ガイド直下: AI 会議アシスタント & 直近予定カード */}
+            <div className="absolute top-[78px] left-3 z-20 w-[264px]">
+              <div className="bg-slate-900/90 border border-slate-700/80 rounded-2xl backdrop-blur-md shadow-xl overflow-hidden text-slate-100">
+                <div className="flex items-center justify-between px-3 py-2 bg-slate-950/60 border-b border-slate-800/80">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs">📅</span>
+                    <span className="text-[11px] font-bold text-slate-200 truncate">会議アシスタント</span>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${
+                        calendarConnected
+                          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      }`}
+                    >
+                      {calendarConnected ? '連携中' : 'テスト可'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsMeetingWidgetCollapsed((v) => !v)}
+                    className="text-slate-400 hover:text-white text-xs px-1.5 py-0.5 rounded hover:bg-slate-800 transition cursor-pointer"
+                  >
+                    {isMeetingWidgetCollapsed ? '▸' : '▾'}
+                  </button>
+                </div>
+
+                {!isMeetingWidgetCollapsed && (
+                  <div className="p-2.5 space-y-2">
+                    {nextUpcomingEvent ? (
+                      <div className="px-2.5 py-2 rounded-xl bg-indigo-950/50 border border-indigo-500/30 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold text-indigo-200 truncate">
+                            {nextUpcomingEvent.summary}
+                          </span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/25 text-indigo-200 font-bold whitespace-nowrap">
+                            {nextEventCountdownLabel}
+                          </span>
+                        </div>
+                        <div className="text-[9px] text-slate-400">
+                          {new Date(nextUpcomingEvent.start?.dateTime || nextUpcomingEvent.start?.date).toLocaleTimeString('ja-JP', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}{' '}
+                          開始予定（5分前に自動移動）
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-slate-400 px-1 py-0.5">
+                        24時間以内の会議予定はありません
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={handleAddTestMeeting}
+                        className="flex-1 px-2.5 py-1.5 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white text-[10px] font-bold shadow-sm transition cursor-pointer flex items-center justify-center gap-1"
+                      >
+                        <span>🕒</span>
+                        <span>5分後のテスト会議を追加</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* 左下: 2D ミニマップ HUD */}
+            <div className="absolute bottom-3 left-3 z-20">
+              <MiniMapHUD
+                users={users}
+                currentUserId={user?.id}
+                myPosition={myPosition}
+                autoMoveTarget={autoMoveTarget}
+                onNavigate={handleNavigateTo}
+                canExecute={canExecute}
+              />
+            </div>
+
+            {/* 近接ユーザー検出時のクイック声かけプロンプト */}
+            {nearbyUser && (
+              <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 max-w-[92vw]">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-slate-900/90 border border-emerald-400/50 backdrop-blur-md shadow-xl text-xs">
+                  <span className="text-[11px] font-bold text-emerald-200 whitespace-nowrap">
+                    ✨ {nearbyUser.name}さんが近くです
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (user?.id) {
+                        setTransientBubble(
+                          user.id,
+                          { text: `👋 ${nearbyUser.name}さん、こんにちは！`, type: 'greeting' },
+                          5000
+                        );
+                      }
+                      setTransientBubble(nearbyUser.id, { text: '👋 よろしく！', type: 'greeting' }, 4500);
+                    }}
+                    className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-emerald-200 text-[10px] font-bold whitespace-nowrap transition cursor-pointer"
+                  >
+                    👋 挨拶する
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleTalkToUser(nearbyUser)}
+                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold whitespace-nowrap transition cursor-pointer"
+                  >
+                    💬 スライドDM
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 右下: エモートバー */}
+            <div
+              className={`absolute bottom-3 z-20 transition-all duration-300 ${
+                chatTargetUser ? 'right-3 sm:right-[426px]' : 'right-3'
+              }`}
+            >
+              <div className="flex items-center gap-1 p-1.5 rounded-2xl bg-slate-900/90 border border-slate-700/80 backdrop-blur-md shadow-2xl">
+                {EMOTE_PRESETS.map((preset) => {
+                  const isActive = myEmote === preset.label;
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      title={preset.title}
+                      onClick={() => handleTriggerEmote(preset.label)}
+                      className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition cursor-pointer whitespace-nowrap ${
+                        isActive
+                          ? 'bg-amber-400 text-slate-950 shadow-md shadow-amber-500/30 scale-105'
+                          : 'bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/60'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Left Side: Office Map */}
         <div className="flex-1 p-6 overflow-y-auto space-y-6">
           {error && (
@@ -778,6 +1478,26 @@ export default function VirtualOfficeView({ ctx }) {
             </div>
           )}
         </div>
+          </>
+        )}
+
+        {/* 右側スライドイン DM パネル（オーバーレイ） */}
+        <aside
+          aria-label="ダイレクトチャット"
+          className={`absolute top-0 right-0 h-full w-full sm:w-[410px] z-30 border-l border-indigo-500/25 bg-slate-950 shadow-2xl shadow-black/80 transform transition-transform duration-300 ease-out ${
+            chatTargetUser ? 'translate-x-0' : 'translate-x-full pointer-events-none'
+          }`}
+        >
+          {chatTargetUser && (
+            <DmChatView
+              key={chatTargetUser.id}
+              ctx={ctx}
+              initialTargetUser={chatTargetUser}
+              initialTargetUserId={chatTargetUser.id}
+              onClose={() => setChatTargetUser(null)}
+            />
+          )}
+        </aside>
       </div>
 
       {/* Native Accessible Light-Dismiss Dialog (`light-dismiss-a-dialog`) */}
@@ -1049,6 +1769,94 @@ export default function VirtualOfficeView({ ctx }) {
           </div>
         )}
       </dialog>
+
+      {/* 3D / 2D 利用統計モーダル */}
+      {isAnalyticsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={() => setIsAnalyticsOpen(false)}
+        >
+          <div
+            className="bg-[#111827] border border-gray-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden text-[#e2e8f0]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center px-5 py-3.5 border-b border-gray-800 bg-gray-900/40">
+              <h3 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+                <span>📊</span> 3D / 2D 利用時間レポート（A/B 集計）
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsAnalyticsOpen(false)}
+                className="text-gray-400 hover:text-white text-base cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-5 space-y-4 text-xs">
+              {!viewAnalytics ? (
+                <div className="text-center py-6 text-gray-400">集計データを読み込み中...</div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30">
+                      <div className="text-[10px] text-emerald-300 font-bold mb-1">あなたの 3D 利用時間</div>
+                      <div className="text-lg font-bold text-white">{formatDuration(viewAnalytics.myUsage?.['3d'])}</div>
+                    </div>
+                    <div className="p-3.5 rounded-xl bg-indigo-950/30 border border-indigo-500/30">
+                      <div className="text-[10px] text-indigo-300 font-bold mb-1">あなたの 2D 利用時間</div>
+                      <div className="text-lg font-bold text-white">{formatDuration(viewAnalytics.myUsage?.['2d'])}</div>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const total3d = viewAnalytics.overallUsage?.['3d'] || 0;
+                    const total2d = viewAnalytics.overallUsage?.['2d'] || 0;
+                    const sum = total3d + total2d;
+                    const pct3d = sum > 0 ? Math.round((total3d / sum) * 100) : 0;
+                    const pct2d = sum > 0 ? 100 - pct3d : 0;
+                    return (
+                      <div className="p-3.5 rounded-xl bg-gray-900/60 border border-gray-800 space-y-2">
+                        <div className="flex justify-between items-center text-[11px] font-bold">
+                          <span className="text-gray-300">全体合計比率</span>
+                          <span className="text-gray-400">
+                            3D: {formatDuration(total3d)} ({pct3d}%) / 2D: {formatDuration(total2d)} ({pct2d}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-2.5 rounded-full bg-gray-800 overflow-hidden flex">
+                          <div className="bg-emerald-500 h-full transition-all" style={{ width: `${pct3d}%` }} />
+                          <div className="bg-indigo-500 h-full transition-all" style={{ width: `${pct2d}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {Array.isArray(viewAnalytics.byUser) && viewAnalytics.byUser.length > 0 && (
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                      <div className="text-[11px] font-bold text-gray-400">メンバー別内訳</div>
+                      {viewAnalytics.byUser.map((row) => {
+                        const member = users.find((u) => Number(u.id) === Number(row.userId));
+                        return (
+                          <div
+                            key={row.userId}
+                            className="flex justify-between items-center px-3 py-2 rounded-lg bg-gray-900/50 border border-gray-800/80"
+                          >
+                            <span className="font-semibold text-gray-200">
+                              {member?.name || `User #${row.userId}`}
+                            </span>
+                            <span className="text-gray-400">
+                              🧊 {formatDuration(row['3d'])} ｜ 🗺️ {formatDuration(row['2d'])}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
