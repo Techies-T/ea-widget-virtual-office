@@ -315,7 +315,7 @@ export default function OfficeAvatar3D({
       </group>
 
       {/* 頭上ネームプレート & アクション */}
-      <Html position={[0, 1.88, 0]} center distanceFactor={13} zIndexRange={[20, 0]}>
+      <Html position={[0, 1.88, 0]} center distanceFactor={13} zIndexRange={[15, 0]}>
         <div className="flex flex-col items-center gap-1 select-none pointer-events-auto">
           {activeBubble && (
             <div className="relative flex flex-col items-center mb-0.5 animate-bounce" style={{ animationDuration: '2.2s' }}>

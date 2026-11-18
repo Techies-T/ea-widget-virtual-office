@@ -1484,7 +1484,7 @@ export default function VirtualOfficeView({ ctx }) {
         {/* 右側スライドイン DM パネル（オーバーレイ） */}
         <aside
           aria-label="ダイレクトチャット"
-          className={`absolute top-0 right-0 h-full w-full sm:w-[410px] z-30 border-l border-indigo-500/25 bg-slate-950 shadow-2xl shadow-black/80 transform transition-transform duration-300 ease-out ${
+          className={`absolute top-0 right-0 h-full w-full sm:w-[410px] z-40 border-l border-indigo-500/25 bg-slate-950 shadow-2xl shadow-black/80 transform transition-transform duration-300 ease-out ${
             chatTargetUser ? 'translate-x-0' : 'translate-x-full pointer-events-none'
           }`}
         >

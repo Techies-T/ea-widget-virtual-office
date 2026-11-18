@@ -413,7 +413,7 @@ function OfficeEnvironment({ onFloorClick, clickTarget, qualityConfig }) {
               <boxGeometry args={[w, 0.02, 0.06]} />
               <meshStandardMaterial color={zone.color} />
             </mesh>
-            <Html position={[cx, 0.14, zone.bounds.minZ + 0.75]} center distanceFactor={18}>
+            <Html position={[cx, 0.14, zone.bounds.minZ + 0.75]} center distanceFactor={18} zIndexRange={[10, 0]}>
               <div
                 className="px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap pointer-events-none select-none border-2 backdrop-blur-sm shadow-md"
                 style={{

@@ -619,6 +619,8 @@ app.post('/api/vo/dm/messages', requireZtaAgentAuth('execute'), async (req, res)
         const targetLangFlag = targetLang === 'en' ? '🇺🇸' : targetLang === 'es' ? '🇪🇸' : '🇯🇵';
 
         let textToSave = text;
+        let translationStatus = isDifferentLang ? 'translated' : 'same_language';
+        let translationWarning = null;
         if (isDifferentLang) {
             try {
                 const transRes = await coreClient.translateViaCore(req.agentToken, {
@@ -628,9 +630,14 @@ app.post('/api/vo/dm/messages', requireZtaAgentAuth('execute'), async (req, res)
                 }, req.eaHostUrl);
                 if (transRes.translated) {
                     textToSave = `🌐 [Gemma 4 Translated (${senderLangFlag} ➔ ${targetLangFlag})]\n${transRes.translated}\n\n(${senderLangFlag} 原文: ${text})`;
+                } else {
+                    translationStatus = 'skipped_unavailable';
+                    translationWarning = transRes.reason || 'ローカルAIが利用できないため、翻訳なしで原文を送信しました。';
                 }
             } catch (tErr) {
                 console.error('[VO Server] Translation skipped:', tErr.message);
+                translationStatus = 'skipped_error';
+                translationWarning = '翻訳サービスに接続できないため、翻訳なしで原文を送信しました。';
             }
         }
 
@@ -768,10 +775,20 @@ app.post('/api/vo/dm/messages', requireZtaAgentAuth('execute'), async (req, res)
             }, 800);
         }
 
-        res.json({ status: 'ok', messageId: insertedId });
+        res.json({ status: 'ok', messageId: insertedId, translationStatus, translationWarning });
     } catch (err) {
         console.error('[VO Server] POST /api/vo/dm/messages error:', err.message);
         res.status(err.status || 500).json({ error: err.message });
+    }
+});
+
+// 10b. GET /api/vo/ai/translate-status - Check whether Local AI translation is available
+app.get('/api/vo/ai/translate-status', requireZtaAgentAuth('read'), async (req, res) => {
+    try {
+        const status = await coreClient.checkTranslateStatus(req.agentToken, req.eaHostUrl);
+        res.json(status);
+    } catch (err) {
+        res.json({ available: false, localAiEnabled: false, reason: err.message });
     }
 });
 

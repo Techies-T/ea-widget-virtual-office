@@ -50,6 +50,10 @@ async function checkWorkPolicyCompliance(agentToken, promptText, hostUrl) {
     });
 }
 
+async function checkTranslateStatus(agentToken, hostUrl) {
+    return callCoreHostApi('/ai/translate/status', agentToken, { hostUrl });
+}
+
 async function translateViaCore(agentToken, { text, senderLangName, targetLangName }, hostUrl) {
     return callCoreHostApi('/ai/translate', agentToken, {
         method: 'POST',
@@ -104,6 +108,7 @@ module.exports = {
     updateCoreUserAvatar,
     fetchAssistantDefaults,
     checkWorkPolicyCompliance,
+    checkTranslateStatus,
     translateViaCore,
     generateAssistantReplyViaCore,
     fetchCommonFreeSlots,

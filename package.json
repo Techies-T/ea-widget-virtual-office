@@ -1,7 +1,7 @@
 {
   "name": "@techies/ea-widget-virtual-office",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Independent Virtual Office & AI Executive Assistant DM Widget Plugin for EmployeeAgent-Core (EA-Widget Protocol v1 + PQC Hybrid Signed)",
   "type": "module",
   "scripts": {

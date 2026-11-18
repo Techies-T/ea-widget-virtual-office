@@ -76,6 +76,40 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
     return () => clearInterval(timer);
   }, [refreshTargetMember]);
 
+  const [translateStatus, setTranslateStatus] = useState({ checked: false, available: true, reason: '' });
+  const [translateWarning, setTranslateWarning] = useState('');
+
+  useEffect(() => {
+    const langDiff =
+      currentUser?.native_language &&
+      targetUser?.native_language &&
+      currentUser.native_language !== targetUser.native_language;
+    if (!langDiff) {
+      setTranslateStatus({ checked: false, available: true, reason: '' });
+      setTranslateWarning('');
+      return;
+    }
+    let cancelled = false;
+    eaFetch('/api/vo/ai/translate-status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setTranslateStatus({
+          checked: true,
+          available: Boolean(data.available),
+          reason: data.reason || ''
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTranslateStatus({ checked: true, available: false, reason: '翻訳ステータスを確認できませんでした' });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eaFetch, currentUser?.native_language, targetUser?.native_language]);
+
   const fetchMessages = useCallback(async () => {
     if (!targetUser?.id) return;
     try {
@@ -164,6 +198,13 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
         })
       });
       if (res.ok) {
+        const resData = await res.json().catch(() => ({}));
+        if (resData?.translationWarning) {
+          setTranslateWarning(resData.translationWarning);
+          setTranslateStatus((prev) => ({ ...prev, checked: true, available: false }));
+        } else {
+          setTranslateWarning('');
+        }
         fetchMessages();
       }
     } catch (err) {
@@ -493,12 +534,24 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {isDifferentLang ? (
-            <div className="flex items-center gap-1 bg-cyan-500/15 border border-cyan-400/35 px-2 py-1 rounded-lg">
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-              <span className="text-[9px] font-bold text-cyan-200 whitespace-nowrap">
-                {senderLang.flag}➔{targetLang.flag}
-              </span>
-            </div>
+            translateStatus.checked && !translateStatus.available ? (
+              <div
+                title={translateStatus.reason || 'ローカルAI未接続のため翻訳なしで送信されます'}
+                className="flex items-center gap-1 bg-amber-500/15 border border-amber-400/40 px-2 py-1 rounded-lg"
+              >
+                <span className="text-[10px]">⚠️</span>
+                <span className="text-[9px] font-bold text-amber-200 whitespace-nowrap">
+                  翻訳なし ({senderLang.flag}➔{targetLang.flag})
+                </span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 bg-cyan-500/15 border border-cyan-400/35 px-2 py-1 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
+                <span className="text-[9px] font-bold text-cyan-200 whitespace-nowrap">
+                  {senderLang.flag}➔{targetLang.flag}
+                </span>
+              </div>
+            )
           ) : (
             <div className="hidden sm:flex items-center gap-1 bg-slate-800/70 border border-slate-700/70 px-2 py-1 rounded-lg">
               <span className="text-[9px] font-semibold text-slate-300">💬 DM</span>
@@ -516,6 +569,15 @@ export default function DmChatView({ ctx, initialTargetUser, initialTargetUserId
           )}
         </div>
       </div>
+
+      {isDifferentLang && ((translateStatus.checked && !translateStatus.available) || translateWarning) && (
+        <div className="px-4 py-1.5 bg-amber-500/10 border-b border-amber-500/25 text-[10px] text-amber-200 flex items-center gap-1.5">
+          <span>⚠️</span>
+          <span className="truncate">
+            {translateWarning || 'ローカルAIが利用できないため、翻訳なしで原文のまま送信されます。'}
+          </span>
+        </div>
+      )}
 
       <div className="flex-1 px-4 py-4 overflow-y-auto space-y-4 bg-gradient-to-b from-slate-950 via-[#0b0f19] to-slate-950">
         {displayMessages.map((msg) => (
